@@ -16,8 +16,8 @@ Memory search tools are provided by the active memory plugin (default:
 
 The default workspace layout uses two memory layers:
 
-- `memory/YYYY-MM-DD.md`
-  - Daily log (append-only).
+- `memory/YYYY/MM/YYYY-MM-DD.md`
+  - Daily log (append-only), organized by year/month hierarchy.
   - Read today + yesterday at session start.
 - `MEMORY.md` (optional)
   - Curated long-term memory.
@@ -29,7 +29,7 @@ These files live under the workspace (`agents.defaults.workspace`, default
 ## When to write memory
 
 - Decisions, preferences, and durable facts go to `MEMORY.md`.
-- Day-to-day notes and running context go to `memory/YYYY-MM-DD.md`.
+- Day-to-day notes and running context go to `memory/YYYY/MM/YYYY-MM-DD.md`.
 - If someone says "remember this," write it down (do not keep it in RAM).
 - This area is still evolving. It helps to remind the model to store memories; it will know what to do.
 - If you want something to stick, **ask the bot to write it** into memory.
@@ -53,7 +53,7 @@ This is controlled by `agents.defaults.compaction.memoryFlush`:
           enabled: true,
           softThresholdTokens: 4000,
           systemPrompt: "Session nearing compaction. Store durable memories now.",
-          prompt: "Write any lasting notes to memory/YYYY-MM-DD.md; reply with NO_REPLY if nothing to store."
+          prompt: "Write any lasting notes to memory/YYYY/MM/YYYY-MM-DD.md; reply with NO_REPLY if nothing to store."
         }
       }
     }
@@ -75,8 +75,9 @@ For the full compaction lifecycle, see
 
 ## Vector memory search
 
-Moltbot can build a small vector index over `MEMORY.md` and `memory/*.md` so
-semantic queries can find related notes even when wording differs.
+Moltbot can build a small vector index over `MEMORY.md` and `memory/*.md` (plus
+any extra directories or files you opt in) so semantic queries can find related
+notes even when wording differs.
 
 Defaults:
 - Enabled by default.
@@ -95,6 +96,27 @@ variables. Codex OAuth only covers chat/completions and does **not** satisfy
 embeddings for memory search. For Gemini, use `GEMINI_API_KEY` or
 `models.providers.google.apiKey`. When using a custom OpenAI-compatible endpoint,
 set `memorySearch.remote.apiKey` (and optional `memorySearch.remote.headers`).
+
+### Additional memory paths
+
+If you want to index Markdown files outside the default workspace layout, add
+explicit paths:
+
+```json5
+agents: {
+  defaults: {
+    memorySearch: {
+      extraPaths: ["../team-docs", "/srv/shared-notes/overview.md"]
+    }
+  }
+}
+```
+
+Notes:
+- Paths can be absolute or workspace-relative.
+- Directories are scanned recursively for `.md` files.
+- Only Markdown files are indexed.
+- Symlinks are ignored (files or directories).
 
 ### Gemini embeddings (native)
 
@@ -189,14 +211,14 @@ Local mode:
 ### How the memory tools work
 
 - `memory_search` semantically searches Markdown chunks (~400 token target, 80-token overlap) from `MEMORY.md` + `memory/**/*.md`. It returns snippet text (capped ~700 chars), file path, line range, score, provider/model, and whether we fell back from local → remote embeddings. No full file payload is returned.
-- `memory_get` reads a specific memory Markdown file (workspace-relative), optionally from a starting line and for N lines. Paths outside `MEMORY.md` / `memory/` are rejected.
+- `memory_get` reads a specific memory Markdown file (workspace-relative), optionally from a starting line and for N lines. Paths outside `MEMORY.md` / `memory/` are allowed only when explicitly listed in `memorySearch.extraPaths`.
 - Both tools are enabled only when `memorySearch.enabled` resolves true for the agent.
 
 ### What gets indexed (and when)
 
-- File type: Markdown only (`MEMORY.md`, `memory/**/*.md`).
+- File type: Markdown only (`MEMORY.md`, `memory/**/*.md`, plus any `.md` files under `memorySearch.extraPaths`).
 - Index storage: per-agent SQLite at `~/.clawdbot/memory/<agentId>.sqlite` (configurable via `agents.defaults.memorySearch.store.path`, supports `{agentId}` token).
-- Freshness: watcher on `MEMORY.md` + `memory/` marks the index dirty (debounce 1.5s). Sync is scheduled on session start, on search, or on an interval and runs asynchronously. Session transcripts use delta thresholds to trigger background sync.
+- Freshness: watcher on `MEMORY.md`, `memory/`, and `memorySearch.extraPaths` marks the index dirty (debounce 1.5s). Sync is scheduled on session start, on search, or on an interval and runs asynchronously. Session transcripts use delta thresholds to trigger background sync.
 - Reindex triggers: the index stores the embedding **provider/model + endpoint fingerprint + chunking params**. If any of those change, Moltbot automatically resets and reindexes the entire store.
 
 ### Hybrid search (BM25 + vector)
@@ -386,3 +408,50 @@ agents: {
 Notes:
 - `remote.*` takes precedence over `models.providers.openai.*`.
 - `remote.headers` merge with OpenAI headers; remote wins on key conflicts. Omit `remote.headers` to use the OpenAI defaults.
+
+---
+
+## Backward Compatibility & Migration
+
+Moltbot supports **automatic migration** from the old memory format to the new hierarchical structure.
+
+### Old Format vs New Format
+
+**Old (flat):**
+```
+memory/2025-01-27.md
+memory/2025-01-26-conversation.md
+```
+
+**New (hierarchical):**
+```
+memory/2025/01/2025-01-27.md
+memory/2025/01/2025-01-26-conversation.md
+```
+
+### Automatic Migration
+
+When Moltbot encounters old-format files:
+1. Detects the old format
+2. Creates `memory/YYYY/MM/` directories
+3. Copies files to new location
+4. Uses new format going forward
+
+**Old files are not deleted** — they're kept as backup.
+
+### What You Need to Do
+
+**Nothing.** Migration is transparent and automatic.
+
+Memory search, read, and write operations work seamlessly across both formats.
+
+### Deprecation Timeline
+
+| Version | Old Format Support |
+|---------|-------------------|
+| **Current** | ✅ Fully supported, automatic migration |
+| **Future +1** | ⚠️ Deprecated warning |
+| **Future +2** | ❌ Not supported (error) |
+| **Future +3** | 🗑️ Removed from codebase |
+
+**See:** [Memory Migration Guide](/concepts/memory-migration) for detailed migration instructions.

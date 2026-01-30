@@ -84,7 +84,7 @@ describe("memory index", () => {
     await result.manager.sync({ force: true });
     const results = await result.manager.search("alpha");
     expect(results.length).toBeGreaterThan(0);
-    expect(results[0]?.path).toContain("memory/2026-01-12.md");
+    expect(results[0]?.path).toContain("memory/2026/01/2026-01-12.md");
     const status = result.manager.status();
     expect(status.sourceCounts).toEqual(
       expect.arrayContaining([
@@ -254,7 +254,7 @@ describe("memory index", () => {
     await manager.sync({ force: true });
     const results = await manager.search("zebra");
     expect(results.length).toBeGreaterThan(0);
-    expect(results[0]?.path).toContain("memory/2026-01-12.md");
+    expect(results[0]?.path).toContain("memory/2026/01/2026-01-12.md");
   });
 
   it("hybrid weights can favor vector-only matches over keyword-only matches", async () => {
@@ -411,5 +411,53 @@ describe("memory index", () => {
     if (!result.manager) throw new Error("manager missing");
     manager = result.manager;
     await expect(result.manager.readFile({ relPath: "NOTES.md" })).rejects.toThrow("path required");
+  });
+
+  it("allows reading from additional memory paths and blocks symlinks", async () => {
+    const extraDir = path.join(workspaceDir, "extra");
+    await fs.mkdir(extraDir, { recursive: true });
+    await fs.writeFile(path.join(extraDir, "extra.md"), "Extra content.");
+
+    const cfg = {
+      agents: {
+        defaults: {
+          workspace: workspaceDir,
+          memorySearch: {
+            provider: "openai",
+            model: "mock-embed",
+            store: { path: indexPath },
+            sync: { watch: false, onSessionStart: false, onSearch: true },
+            extraPaths: [extraDir],
+          },
+        },
+        list: [{ id: "main", default: true }],
+      },
+    };
+    const result = await getMemorySearchManager({ cfg, agentId: "main" });
+    expect(result.manager).not.toBeNull();
+    if (!result.manager) throw new Error("manager missing");
+    manager = result.manager;
+    await expect(result.manager.readFile({ relPath: "extra/extra.md" })).resolves.toEqual({
+      path: "extra/extra.md",
+      text: "Extra content.",
+    });
+
+    const linkPath = path.join(extraDir, "linked.md");
+    let symlinkOk = true;
+    try {
+      await fs.symlink(path.join(extraDir, "extra.md"), linkPath, "file");
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EPERM" || code === "EACCES") {
+        symlinkOk = false;
+      } else {
+        throw err;
+      }
+    }
+    if (symlinkOk) {
+      await expect(result.manager.readFile({ relPath: "extra/linked.md" })).rejects.toThrow(
+        "path required",
+      );
+    }
   });
 });
